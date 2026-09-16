@@ -246,6 +246,68 @@ def extract_domain(url):
         return ""
 
 
+def normalize_daily_url(url):
+    """
+    일일파일 내부 중복검사용 URL 정규화.
+
+    기준파일과의 비교는 기존처럼 도메인 기준으로 유지하지만,
+    일일파일끼리는 서로 다른 하위 경로를 같은 건으로 보면 안 되므로
+    전체 URL(호스트 + 경로 + 쿼리)을 비교합니다.
+
+    비교 시 다음 차이만 무시합니다.
+    - http:// / https://
+    - www.
+    - URL 맨 끝의 /
+
+    예:
+    https://www.example.com/a/ -> example.com/a
+    http://example.com/a       -> example.com/a
+
+    t.me/s/funbe_next 와 t.me/s/toonkor_com 은 서로 다른 URL입니다.
+    """
+    if pd.isna(url):
+        return ""
+
+    text = str(url).strip()
+
+    if not text:
+        return ""
+
+    if not text.lower().startswith(("http://", "https://")):
+        text = "http://" + text
+
+    try:
+        parsed = urlparse(text)
+
+        host = (parsed.hostname or "").lower().strip()
+
+        if host.startswith("www."):
+            host = host[4:]
+
+        if not host:
+            return ""
+
+        # 경로는 사이트에 따라 대소문자를 구분할 수 있으므로 그대로 유지
+        path = parsed.path or ""
+
+        # 루트의 / 또는 맨 마지막 /만 비교에서 제외
+        if path == "/":
+            path = ""
+        else:
+            path = path.rstrip("/")
+
+        normalized = host + path
+
+        # 쿼리는 서로 다른 페이지를 가리킬 수 있으므로 유지
+        if parsed.query:
+            normalized += "?" + parsed.query
+
+        return normalized
+
+    except Exception:
+        return ""
+
+
 def normalize_alias(text):
     """사이트명 비교용 정규화"""
     if text is None or pd.isna(text):
@@ -773,10 +835,11 @@ def run_process(reference_path, daily_path):
     ) = prepare_reference_data(df_ref)
 
     # -----------------------------------------------------
-    # 일일파일 내부 최초 도메인 저장
+    # 일일파일 내부 최초 URL 저장
     # -----------------------------------------------------
-
-    seen_daily = {}
+    # 중요: 기준파일과의 중복은 도메인 기준이지만,
+    # 일일파일 내부에서는 하위 경로가 다르면 서로 다른 건으로 봅니다.
+    seen_daily_urls = {}
 
     # 화면 복사용 중복 ID
     duplicate_ids = []
@@ -835,6 +898,11 @@ def run_process(reference_path, daily_path):
                 current_content = str(content_value)
 
         current_domain = extract_domain(
+            current_url
+        )
+
+        # 일일파일 내부 중복은 도메인이 아니라 전체 URL 기준
+        current_daily_url_key = normalize_daily_url(
             current_url
         )
 
@@ -897,26 +965,32 @@ def run_process(reference_path, daily_path):
             )
 
         # =================================================
-        # ② 오늘 처리대기 파일 내부 도메인 중복
+        # ② 오늘 처리대기 파일 내부 '전체 URL' 중복
         # =================================================
+        # 예)
+        # t.me/s/funbe_next  != t.me/s/toonkor_com
+        # → 도메인은 같아도 경로가 다르므로 내부 중복 아님
+        #
+        # https://www.example.com/a/ == http://example.com/a
+        # → 프로토콜/www/마지막 슬래시 차이만 있으면 같은 URL로 처리
 
-        if current_domain:
+        if current_daily_url_key:
 
-            if current_domain in seen_daily:
+            if current_daily_url_key in seen_daily_urls:
 
-                first_data = seen_daily[
-                    current_domain
+                first_data = seen_daily_urls[
+                    current_daily_url_key
                 ]
 
                 duplicate_details.append(
-                    "오늘파일 내부 중복: "
+                    "오늘파일 내부 동일 URL 중복: "
                     f"[최초번호 {first_data['id']} / "
                     f"URL {first_data['url']}]"
                 )
 
             else:
 
-                seen_daily[current_domain] = {
+                seen_daily_urls[current_daily_url_key] = {
                     "id": current_id,
                     "url": current_url
                 }
